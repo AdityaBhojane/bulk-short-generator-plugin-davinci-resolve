@@ -1,0 +1,6 @@
+1) paste this folder inside /script/utilites folder 
+2) move BulkShortsLauncher file to /utilities 
+DONE ! 
+
+how to use : 
+open davinci resolve and run launcher after then come back to utilities folder and click on folder double tap gui which open UI in browser where you can control everything

@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bulk Shorts Generator</title>
+<style>
+  :root {
+    --bg: #1a1b1e;
+    --panel: #232428;
+    --text: #e8e8ea;
+    --muted: #9a9ba0;
+    --border: #33343a;
+    --accent: #5b8cff;
+    --ok: #4caf6a;
+    --err: #e05a5a;
+    --input-bg: #16171a;
+  }
+  body.light {
+    --bg: #f7f7f8;
+    --panel: #ffffff;
+    --text: #1c1c1e;
+    --muted: #666;
+    --border: #e2e2e4;
+    --accent: #3b6fe0;
+    --ok: #1a7f1a;
+    --err: #c0392b;
+    --input-bg: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, sans-serif;
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+    background: var(--bg);
+    color: var(--text);
+    transition: background 0.15s, color 0.15s;
+  }
+  h2 { margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .header-buttons { display: flex; gap: 6px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  textarea, input[type=text], select {
+    width: 100%; padding: 8px; box-sizing: border-box; font-family: inherit; font-size: 13px;
+    background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  }
+  textarea { height: 130px; font-family: monospace; }
+  input:disabled, select:disabled { opacity: 0.6; }
+  button {
+    padding: 8px 16px; font-size: 13px; cursor: pointer; margin-right: 8px; margin-top: 8px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  button.primary { background: var(--accent); color: white; border: none; }
+  button.danger { background: #5a2020; color: #ffdada; border: 1px solid #7a2c2c; }
+  button.icon { padding: 6px 10px; font-size: 12px; margin-top: 0; }
+  button.tiny { padding: 2px 8px; font-size: 11px; margin: 0 0 0 6px; }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  button:hover:not(:disabled) { filter: brightness(1.1); }
+
+  .spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff;
+    border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0;
+  }
+  button:not(.primary):not(.danger) .spinner {
+    border: 2px solid rgba(128,128,128,0.35); border-top-color: var(--text);
+  }
+  .spin-inline {
+    display: inline-block; width: 10px; height: 10px;
+    border: 2px solid rgba(128,128,128,0.35); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -1px; margin-right: 4px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .ok { color: var(--ok); }
+  .err { color: var(--err); }
+
+  #errorBanner {
+    display: none; margin-top: 14px; padding: 10px 12px; border-radius: 6px;
+    background: rgba(224,90,90,0.12); border: 1px solid var(--err); color: var(--err);
+    font-size: 13px; align-items: flex-start; justify-content: space-between; gap: 10px;
+  }
+  #errorBanner.show { display: flex; }
+  #errorBannerText { flex: 1; white-space: pre-wrap; }
+  #errorBanner button { background: none; border: none; color: var(--err); font-size: 14px; padding: 0 4px; margin: 0; cursor: pointer; }
+
+  #log {
+    margin-top: 16px; padding: 10px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; font-family: monospace; font-size: 12px; white-space: pre-wrap;
+    max-height: 150px; overflow-y: auto; color: var(--muted);
+  }
+  section { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .step { font-weight: 600; }
+  .subhead { font-weight: 600; font-size: 13px; margin: 16px 0 4px; color: var(--text); }
+  .subhead:first-of-type { margin-top: 4px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row input[type=text] { flex: 1; }
+  .locked-note { font-size: 12px; color: #c98a2c; margin-top: 4px; }
+  label.muted { display: inline-flex; align-items: center; gap: 6px; }
+  #presetUsedNote { margin: 4px 0 0; font-size: 13px; }
+
+  /* Toggle switch for the outro on/off */
+  .switch-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .switch { position: relative; display: inline-block; width: 38px; height: 21px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; inset: 0; background: var(--border); border-radius: 21px; transition: 0.15s; }
+  .slider:before { position: absolute; content: ""; height: 15px; width: 15px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.15s; }
+  input:checked + .slider { background: var(--accent); }
+  input:checked + .slider:before { transform: translateX(17px); }
+</style>
+</head>
+<body class="dark">
+
+<h2>
+  Bulk Shorts Generator
+  <span class="header-buttons">
+    <button id="themeToggle" onclick="toggleTheme()">☀ Light mode</button>
+    <button id="stopServerBtn" class="danger" onclick="runWithLoading(this, 'Stopping...', stopServer)">Stop Server</button>
+  </span>
+</h2>
+<p class="muted">Connects to the BulkShorts Lua server running inside DaVinci Resolve. Closing this window does NOT stop the server, rendering, or outro stitching. Opening it just does a quick connection check — click "🔄 Restore Data" to pull back your saved settings and last batch on your own schedule.</p>
+
+<div id="errorBanner"><span id="errorBannerText"></span><button onclick="hideError()">✕</button></div>
+
+<section>
+  <div class="step">1. Connection</div>
+  <button class="primary" id="connectBtn" onclick="runWithLoading(this, 'Connecting...', quickCheck)">Test Connection</button>
+  <button class="icon" id="restoreBtn" onclick="runWithLoading(this, 'Restoring...', restoreData)">🔄 Restore Data</button>
+  <span id="connStatus" class="muted"></span>
+</section>
+
+<section>
+  <div class="step">2. Settings</div>
+  <p class="muted">Set everything up here first — folder, preset, and outro. Once you create render jobs below, the folder and preset lock in (Resolve can't edit an already-created job). Outro settings stay editable any time.</p>
+
+  <div class="subhead">Render preset</div>
+  <p class="muted">Save your codec/quality/format as a named preset in Resolve's Deliver page once, then pick it here. We never override your codec settings ourselves — this just tells the script which of your saved presets to reapply before every clip.</p>
+  <select id="renderPreset" onchange="saveSettings()">
+    <option value="">Use whatever is currently active in Deliver page</option>
+  </select>
+  <button class="icon" id="refreshPresetsBtn" onclick="runWithLoading(this, 'Loading...', loadPresets)">🔄 Refresh preset list</button>
+
+  <div class="subhead">Output folder</div>
+  <input type="text" id="targetDir" placeholder="Leave blank for default: %USERPROFILE%\Videos\BulkShorts" onchange="saveSettings()">
+  <div id="lockNote" class="locked-note" style="display:none;">Locked for this batch. Click "Start New Batch" below to change it.</div>
+
+  <div class="subhead">Outro</div>
+  <p class="muted">Requires ffmpeg installed and on your PATH. Titles with an apostrophe (') or straight quote (") are now handled correctly — clip titles are sanitized and the concat list is properly escaped. Stitching runs automatically as soon as rendering finishes — even if this window is closed. You can change these settings any time, even after jobs are created.</p>
+  <div class="switch-row">
+    <label class="switch">
+      <input type="checkbox" id="addOutro" checked onchange="saveSettings()">
+      <span class="slider"></span>
+    </label>
+    <span class="muted">Add outro to every Short automatically after rendering</span>
+  </div>
+  <div style="margin-top:10px;">
+    <label class="muted">Outro file (full path):</label>
+    <input type="text" id="outroPath" placeholder="C:\Outro\outro.mp4" onchange="saveSettings()">
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <label class="muted">Render output extension:</label>
+    <input type="text" id="outputExt" value="mp4" style="max-width:80px;" onchange="saveSettings()">
+  </div>
+  <label class="muted" style="margin-top:6px;"><input type="checkbox" id="deleteRaw" onchange="saveSettings()"> Delete the no-outro version after stitching succeeds</label>
+  <br>
+  <button id="checkFfmpegBtn" onclick="runWithLoading(this, 'Checking...', checkFfmpeg)">Check ffmpeg</button>
+  <span id="ffmpegStatus" class="muted"></span>
+</section>
+
+<section>
+  <div class="step">3. Paste your clip list</div>
+  <p class="muted">Format: <code>Title | Start | End</code> (one per line). Times: HH:MM:SS or HH:MM:SS:FF</p>
+  <textarea id="clipInput" onchange="saveSettings()" placeholder="Epic Escape | 00:12:35 | 00:13:48
+Insane Clutch | 00:27:14 | 00:28:52
+Almost Caught | 00:41:02 | 00:42:37"></textarea>
+
+  <label class="muted"><input type="checkbox" id="clearQueue" onchange="saveSettings()"> Clear existing render queue first</label>
+  <br>
+  <button class="primary" id="queueBtn" onclick="runWithLoading(this, 'Creating jobs...', queueJobs)">Create Render Jobs</button>
+  <button id="newBatchBtn" onclick="runWithLoading(this, 'Starting...', startNewBatch)" style="display:none;">Start New Batch</button>
+</section>
+
+<section id="previewSection" style="display:none;">
+  <div class="step">4. Preview</div>
+  <table id="previewTable"><thead><tr><th>Title</th><th>Start</th><th>End</th><th>Duration</th><th>Status</th></tr></thead><tbody></tbody></table>
+</section>
+
+<section id="renderSection" style="display:none;">
+  <div class="step">5. Render</div>
+  <p id="presetUsedNote" class="muted"></p>
+  <button class="primary" id="startRenderBtn" onclick="runWithLoading(this, 'Starting render...', startRender)">Render All Shorts</button>
+  <button id="stopRenderBtn" onclick="runWithLoading(this, 'Stopping...', stopRender)">Stop</button>
+  <table id="renderTable"><thead><tr><th>Job</th><th>Status</th><th>Progress</th><th>Preset</th><th>Outro</th></tr></thead><tbody></tbody></table>
+</section>
+
+<div id="log"></div>
+
+<script>
+const SERVER = "http://127.0.0.1:56010/";
+let timelineFps = 30;
+let parsedClips = [];
+let queuedJobs = []; // {title, jobId, filename, presetApplied}
+let lockedTargetDir = "";
+
+function log(msg) {
+  const el = document.getElementById("log");
+  el.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ---------- Error banner ----------
+function showError(msg) {
+  const banner = document.getElementById("errorBanner");
+  document.getElementById("errorBannerText").textContent = msg;
+  banner.classList.add("show");
+  log("ERROR: " + msg);
+}
+function hideError() {
+  document.getElementById("errorBanner").classList.remove("show");
+}
+
+// ---------- Loading spinner wrapper ----------
+async function runWithLoading(btn, label, fn) {
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span><span>${label}</span>`;
+  try {
+    await fn();
+  } catch (e) {
+    showError(typeof e === "string" ? e : (e.message || "Unexpected error. Check the log below."));
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
+}
+
+async function callResolve(payload) {
+  let res;
+  try {
+    res = await fetch(SERVER, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch (e) {
+    throw new Error("Could not reach the BulkShorts server. Make sure the script is running in Resolve (Workspace \u2192 Scripts \u2192 Utility \u2192 BulkShorts).");
+  }
+  return res.json();
+}
+
+// ---------- Theme ----------
+function applyTheme(isLight) {
+  document.body.classList.toggle("light", isLight);
+  document.getElementById("themeToggle").textContent = isLight ? "🌙 Dark mode" : "☀ Light mode";
+}
+function toggleTheme() {
+  const isLight = !document.body.classList.contains("light");
+  applyTheme(isLight);
+  saveSettings({ lightMode: isLight });
+}
+
+// ---------- Stop server ----------
+async function stopServer() {
+  if (!confirm("This fully stops the background server. You'll need to re-run BulkShorts from Resolve's Scripts menu to use it again. Continue?")) return;
+  try { await callResolve({ func: "Shutdown" }); } catch (e) { /* connection drops as server closes -- expected */ }
+  log("Server stop requested. Close this window. Re-run BulkShorts from Resolve when you're ready to use it again.");
+}
+
+// ---------- Settings persistence ----------
+let currentSettings = {};
+
+async function loadSettings() {
+  const resp = await callResolve({ func: "GetSettings" });
+  if (resp.error) { showError(resp.error); return; }
+  if (resp.ok) {
+    currentSettings = resp.settings || {};
+    if (currentSettings.clipListDraft && !document.getElementById("clipInput").value) {
+      document.getElementById("clipInput").value = currentSettings.clipListDraft;
+    }
+    if (currentSettings.outroPath) document.getElementById("outroPath").value = currentSettings.outroPath;
+    if (currentSettings.outputExt) document.getElementById("outputExt").value = currentSettings.outputExt;
+    if (typeof currentSettings.addOutro === "boolean") document.getElementById("addOutro").checked = currentSettings.addOutro;
+    if (typeof currentSettings.deleteRaw === "boolean") document.getElementById("deleteRaw").checked = currentSettings.deleteRaw;
+    if (typeof currentSettings.clearQueueFirst === "boolean") document.getElementById("clearQueue").checked = currentSettings.clearQueueFirst;
+    if (currentSettings.targetDir) document.getElementById("targetDir").value = currentSettings.targetDir;
+    applyTheme(!!currentSettings.lightMode);
+    if (currentSettings.renderPresetName) window.__savedPreset = currentSettings.renderPresetName;
+    log("Loaded saved settings.");
+  }
+}
+
+async function saveSettings(extra) {
+  const settings = Object.assign({
+    targetDir: document.getElementById("targetDir").value.trim(),
+    renderPresetName: document.getElementById("renderPreset").value,
+    outroPath: document.getElementById("outroPath").value.trim(),
+    outputExt: document.getElementById("outputExt").value.trim() || "mp4",
+    addOutro: document.getElementById("addOutro").checked,
+    deleteRaw: document.getElementById("deleteRaw").checked,
+    clearQueueFirst: document.getElementById("clearQueue").checked,
+    lightMode: document.body.classList.contains("light"),
+    clipListDraft: document.getElementById("clipInput").value,
+  }, extra || {});
+  try { await callResolve({ func: "SaveSettings", settings }); } catch (e) { /* not critical, don't interrupt the user */ }
+}
+
+async function loadPresets() {
+  const resp = await callResolve({ func: "GetRenderPresets" });
+  if (resp.error) { showError(resp.error); return; }
+  const select = document.getElementById("renderPreset");
+  select.innerHTML = '<option value="">Use whatever is currently active in Deliver page</option>';
+  if (resp.ok && resp.presets) {
+    for (const name of resp.presets) {
+      const opt = document.createElement("option");
+      opt.value = name; opt.textContent = name;
+      select.appendChild(opt);
+    }
+    if (window.__savedPreset && resp.presets.includes(window.__savedPreset)) {
+      select.value = window.__savedPreset;
+    }
+    log(`Loaded ${resp.presets.length} render preset(s).`);
+  }
+}
+
+function setPresetNote(presetName) {
+  const el = document.getElementById("presetUsedNote");
+  el.textContent = presetName
+    ? `Rendering with preset: "${presetName}"`
+    : `Using Deliver page's current settings (no preset selected)`;
+}
+
+// ---------- Restore an in-progress or recently finished batch ----------
+async function restoreActiveBatch() {
+  const resp = await callResolve({ func: "GetActiveBatch" });
+  if (resp.error) { showError(resp.error); return; }
+  if (!resp.ok || !resp.batch || !resp.batch.jobs || resp.batch.jobs.length === 0) return;
+
+  const batch = resp.batch;
+  queuedJobs = batch.jobs;
+  lockedTargetDir = batch.targetDir;
+
+  const targetDirField = document.getElementById("targetDir");
+  targetDirField.value = batch.targetDir;
+  targetDirField.disabled = true;
+  document.getElementById("renderPreset").disabled = true;
+  document.getElementById("lockNote").style.display = "block";
+  document.getElementById("queueBtn").style.display = "none";
+  document.getElementById("newBatchBtn").style.display = "inline-block";
+
+  if (batch.outroPath) document.getElementById("outroPath").value = batch.outroPath;
+  if (batch.outputExt) document.getElementById("outputExt").value = batch.outputExt;
+  document.getElementById("addOutro").checked = !!batch.addOutro;
+  document.getElementById("deleteRaw").checked = !!batch.deleteRaw;
+
+  setPresetNote(batch.presetName);
+  renderRenderTable();
+  document.getElementById("renderSection").style.display = "block";
+  log(`Restored previous batch: ${queuedJobs.length} job(s) in ${batch.targetDir}`);
+
+  const statusResp = await callResolve({ func: "GetRenderStatus", jobIds: queuedJobs.map(j => j.jobId) });
+  if (statusResp.error) { showError(statusResp.error); return; }
+  if (statusResp.ok) {
+    for (const s of statusResp.statuses) {
+      const row = document.getElementById("job_" + s.jobId);
+      if (row) {
+        row.querySelector(".status").textContent = s.status;
+        row.querySelector(".pct").textContent = s.pct + "%";
+        if (s.status === "Complete") row.querySelector(".status").className = "status ok";
+      }
+    }
+    if (statusResp.inProgress) {
+      document.getElementById("startRenderBtn").disabled = true;
+      log("Rendering is still in progress from your last session...");
+      pollStatus();
+    } else if (batch.addOutro && !batch.stitchDone) {
+      setStitchingState();
+      log("Waiting for automatic outro stitching to finish...");
+      pollOutroStatus();
+    } else if (batch.stitchDone) {
+      applyOutroStatuses(batch.outroStatus || {});
+    }
+  }
+}
+
+function setStitchingState() {
+  for (const job of queuedJobs) {
+    const row = document.getElementById("job_" + job.jobId);
+    const cell = row ? row.querySelector(".outro") : null;
+    if (cell && cell.textContent !== "Done") {
+      cell.innerHTML = `<span class="spin-inline"></span>Stitching...`;
+    }
+  }
+}
+
+function applyOutroStatuses(outroStatus) {
+  for (const job of queuedJobs) {
+    const st = outroStatus[job.jobId];
+    const row = document.getElementById("job_" + job.jobId);
+    const cell = row ? row.querySelector(".outro") : null;
+    if (!cell) continue;
+    if (st) {
+      if (st.ok) {
+        cell.textContent = "Done";
+        cell.className = "outro ok";
+      } else {
+        cell.innerHTML = `<span class="err" title="${(st.error || '').replace(/"/g, '&quot;')}">Failed</span><button class="tiny" onclick="retryStitch('${job.jobId}')">Retry</button>`;
+        cell.className = "outro";
+      }
+    } else {
+      cell.textContent = "-";
+    }
+  }
+}
+
+async function retryStitch(jobId) {
+  const job = queuedJobs.find(j => j.jobId === jobId);
+  if (!job) return;
+  const row = document.getElementById("job_" + jobId);
+  const cell = row ? row.querySelector(".outro") : null;
+  if (cell) cell.innerHTML = `<span class="spin-inline"></span>Retrying...`;
+
+  const resp = await callResolve({
+    func: "StitchOutro",
+    jobId: jobId,
+    targetDir: lockedTargetDir,
+    filename: job.filename,
+    extension: document.getElementById("outputExt").value.trim() || "mp4",
+    outroPath: document.getElementById("outroPath").value.trim(),
+    deleteRaw: document.getElementById("deleteRaw").checked,
+  });
+
+  if (resp.error) {
+    showError(`Retry failed for "${job.title}": ${resp.error}`);
+    if (cell) cell.innerHTML = `<span class="err" title="${resp.error.replace(/"/g, '&quot;')}">Failed</span><button class="tiny" onclick="retryStitch('${jobId}')">Retry</button>`;
+  } else {
+    log(`Outro added on retry: ${resp.finalPath}`);
+    if (cell) { cell.textContent = "Done"; cell.className = "outro ok"; }
+  }
+}
+
+// ---------- Connection: fast check only (Ping + timeline info) ----------
+async function quickCheck() {
+  const statusEl = document.getElementById("connStatus");
+  statusEl.textContent = "";
+  const ping = await callResolve({ func: "Ping" });
+  if (ping.error) { statusEl.textContent = "Error: " + ping.error; statusEl.className = "err"; showError(ping.error); return; }
+
+  const info = await callResolve({ func: "GetTimelineInfo" });
+  if (info.error) { statusEl.textContent = "Connected, but: " + info.error; statusEl.className = "err"; showError(info.error); return; }
+
+  timelineFps = info.fps;
+  statusEl.textContent = `Connected. Timeline "${info.name}" @ ${info.fps}fps`;
+  statusEl.className = "ok";
+  log(`Connected to timeline "${info.name}" (${info.fps}fps, ${info.durationSeconds.toFixed(1)}s)`);
+}
+
+// ---------- Restore Data: the heavier chain, only runs when you click it ----------
+async function restoreData() {
+  await quickCheck();
+  await loadSettings();
+  await loadPresets();
+  await restoreActiveBatch();
+  log("Data restored.");
+}
+
+function parseTimecodeToSeconds(tc, fps) {
+  const parts = tc.trim().split(":").map(p => parseInt(p, 10));
+  if (parts.some(isNaN)) return null;
+  if (parts.length === 4) return parts[0]*3600 + parts[1]*60 + parts[2] + parts[3]/(fps||30);
+  if (parts.length === 3) return parts[0]*3600 + parts[1]*60 + parts[2];
+  if (parts.length === 2) return parts[0]*60 + parts[1];
+  return null;
+}
+
+function fmtDuration(sec) {
+  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+  return `${m}m ${s}s`;
+}
+
+function parseAndPreview() {
+  const text = document.getElementById("clipInput").value;
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+
+  parsedClips = lines.map(line => {
+    const parts = line.split("|").map(p => p.trim());
+    if (parts.length !== 3) return { title: line, error: "Expected: Title | Start | End" };
+    const [title, startTc, endTc] = parts;
+    const startSec = parseTimecodeToSeconds(startTc, timelineFps);
+    const endSec = parseTimecodeToSeconds(endTc, timelineFps);
+    if (startSec === null || endSec === null) return { title, error: "Could not parse timecode" };
+    if (endSec <= startSec) return { title, error: "End must be after start" };
+    return { title, startTc, endTc, startSec, endSec, duration: endSec - startSec };
+  });
+
+  const tbody = document.querySelector("#previewTable tbody");
+  tbody.innerHTML = "";
+  for (const c of parsedClips) {
+    const row = document.createElement("tr");
+    if (c.error) {
+      row.innerHTML = `<td>${c.title}</td><td colspan="3"></td><td class="err">${c.error}</td>`;
+    } else {
+      row.innerHTML = `<td>${c.title}</td><td>${c.startTc}</td><td>${c.endTc}</td><td>${fmtDuration(c.duration)}</td><td class="ok">Ready</td>`;
+    }
+    tbody.appendChild(row);
+  }
+  document.getElementById("previewSection").style.display = "block";
+  return parsedClips.filter(c => !c.error).length > 0;
+}
+
+async function queueJobs() {
+  const hasValid = parseAndPreview();
+  if (!hasValid) { showError("No valid clips to queue. Check the format: Title | Start | End"); return; }
+  const valid = parsedClips.filter(c => !c.error);
+
+  const targetDirField = document.getElementById("targetDir");
+  const presetSelect = document.getElementById("renderPreset");
+  const selectedPreset = presetSelect.value;
+  const payload = {
+    func: "QueueRenderJobs",
+    clips: valid.map(c => ({ title: c.title, startSeconds: c.startSec, endSeconds: c.endSec })),
+    targetDir: targetDirField.value.trim(),
+    clearQueueFirst: document.getElementById("clearQueue").checked,
+    renderPresetName: selectedPreset,
+    outroPath: document.getElementById("outroPath").value.trim(),
+    outputExt: document.getElementById("outputExt").value.trim() || "mp4",
+    addOutro: document.getElementById("addOutro").checked,
+    deleteRaw: document.getElementById("deleteRaw").checked,
+  };
+
+  const resp = await callResolve(payload);
+  if (resp.error) { showError(resp.error); return; }
+
+  queuedJobs = resp.results.filter(r => r.ok);
+  const failed = resp.results.filter(r => !r.ok);
+  lockedTargetDir = resp.targetDir;
+  log(`Queued ${queuedJobs.length} render jobs to ${resp.targetDir}`);
+
+  const presetFailures = queuedJobs.filter(j => selectedPreset && j.presetApplied === false);
+  if (presetFailures.length) {
+    showError(`Preset "${selectedPreset}" failed to apply on ${presetFailures.length} job(s): ` + presetFailures.map(j => j.title).join(", ") + ". Check the preset still exists in Resolve's Deliver page.");
+  }
+  if (failed.length) showError(`${failed.length} clip(s) failed to queue: ` + failed.map(f => `${f.title} (${f.error})`).join("; "));
+
+  await saveSettings({ targetDir: resp.targetDir });
+
+  targetDirField.value = resp.targetDir;
+  targetDirField.disabled = true;
+  presetSelect.disabled = true;
+  document.getElementById("lockNote").style.display = "block";
+  document.getElementById("queueBtn").style.display = "none";
+  document.getElementById("newBatchBtn").style.display = "inline-block";
+
+  setPresetNote(resp.presetName);
+  renderRenderTable();
+  document.getElementById("renderSection").style.display = "block";
+}
+
+async function startNewBatch() {
+  const resp = await callResolve({ func: "ClearActiveBatch" });
+  if (resp.error) { showError(resp.error); return; }
+  queuedJobs = [];
+  lockedTargetDir = "";
+  document.getElementById("targetDir").disabled = false;
+  document.getElementById("renderPreset").disabled = false;
+  document.getElementById("lockNote").style.display = "none";
+  document.getElementById("queueBtn").style.display = "inline-block";
+  document.getElementById("newBatchBtn").style.display = "none";
+  document.getElementById("renderSection").style.display = "none";
+  document.querySelector("#renderTable tbody").innerHTML = "";
+  log("Started a new batch. You can change the output folder and preset now.");
+}
+
+function presetCellHtml(presetApplied) {
+  if (presetApplied === true) return '<span class="ok">&#10003;</span>';
+  if (presetApplied === false) return '<span class="err">&#10007;</span>';
+  return '<span class="muted">-</span>';
+}
+
+function renderRenderTable() {
+  const tbody = document.querySelector("#renderTable tbody");
+  tbody.innerHTML = "";
+  for (const job of queuedJobs) {
+    const row = document.createElement("tr");
+    row.id = "job_" + job.jobId;
+    row.innerHTML = `<td>${job.title}</td><td class="status">Queued</td><td class="pct">0%</td><td class="preset">${presetCellHtml(job.presetApplied)}</td><td class="outro">-</td>`;
+    tbody.appendChild(row);
+  }
+}
+
+async function startRender() {
+  if (queuedJobs.length === 0) { showError("No jobs queued yet — click 'Create Render Jobs' first."); return; }
+  const resp = await callResolve({ func: "StartRenderAll", jobIds: queuedJobs.map(j => j.jobId) });
+  if (resp.error) { showError(resp.error); return; }
+  log("Rendering started (this continues even if you close this window)...");
+  document.getElementById("startRenderBtn").disabled = true;
+  pollStatus();
+}
+
+async function pollStatus() {
+  const resp = await callResolve({ func: "GetRenderStatus", jobIds: queuedJobs.map(j => j.jobId) });
+  if (resp.error) { showError(resp.error); return; }
+
+  for (const s of resp.statuses) {
+    const row = document.getElementById("job_" + s.jobId);
+    if (row) {
+      row.querySelector(".status").textContent = s.status;
+      row.querySelector(".pct").textContent = s.pct + "%";
+      if (s.status === "Complete") row.querySelector(".status").className = "status ok";
+    }
+  }
+
+  if (resp.inProgress) {
+    setTimeout(pollStatus, 1000);
+  } else {
+    log("Rendering finished.");
+    document.getElementById("startRenderBtn").disabled = false;
+    if (document.getElementById("addOutro").checked) {
+      setStitchingState();
+      log("Waiting for automatic outro stitching (runs server-side, even if you close this window)...");
+      pollOutroStatus();
+    }
+  }
+}
+
+async function pollOutroStatus() {
+  const resp = await callResolve({ func: "GetActiveBatch" });
+  if (resp.error) { showError(resp.error); return; }
+  const batch = resp.batch;
+  applyOutroStatuses(batch.outroStatus || {});
+  if (!batch.stitchDone) {
+    setTimeout(pollOutroStatus, 1500);
+  } else {
+    const failures = Object.values(batch.outroStatus || {}).filter(s => !s.ok);
+    if (failures.length) {
+      showError(`Outro stitching finished with ${failures.length} failure(s). Check the Outro column for details and use "Retry" on any failed row. First error: ${failures[0].error}`);
+    } else {
+      log("Outro stitching complete.");
+    }
+  }
+}
+
+async function stopRender() {
+  const resp = await callResolve({ func: "StopRendering" });
+  if (resp.error) { showError(resp.error); return; }
+  log("Stop requested.");
+  document.getElementById("startRenderBtn").disabled = false;
+}
+
+async function checkFfmpeg() {
+  const el = document.getElementById("ffmpegStatus");
+  el.textContent = "";
+  const resp = await callResolve({ func: "CheckFfmpeg" });
+  if (resp.ok) { el.textContent = "Found: ffmpeg " + resp.version; el.className = "ok"; }
+  else { el.textContent = resp.error; el.className = "err"; showError(resp.error); }
+}
+
+// ---------- On open: fast connection check only. Restoring data is manual. ----------
+window.addEventListener("load", () => {
+  runWithLoading(document.getElementById("connectBtn"), "Connecting...", quickCheck);
+});
+</script>
+</body>
+</html>
