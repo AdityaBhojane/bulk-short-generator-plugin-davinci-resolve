@@ -1,4 +1,4 @@
--- BulkShorts.lua (V14)
+-- BulkShorts.lua (V15)
 -- Place in: ...Scripts\Utility\BulkShortsGenerator\BulkShorts.lua
 -- gui.html and ljsocket.lua must be in this same folder.
 -- Run via: Resolve -> Workspace -> Scripts -> Utility -> BulkShorts (the launcher stub)
@@ -120,11 +120,30 @@ end
 -----------------------------------------------------------------------
 local function sanitize_filename(name)
   name = tostring(name or "")
+  -- Strip anything outside plain printable ASCII (32-126). This removes
+  -- emoji and other Unicode symbols, which is necessary because Lua's file
+  -- functions on Windows (io.open, os.remove, existence checks) go through
+  -- the ANSI C runtime rather than Windows' Unicode-aware file APIs. An
+  -- emoji cannot be represented in that ANSI encoding at all, so a filename
+  -- containing one becomes invisible to Lua's own file checks even though
+  -- Resolve (which IS Unicode-native) rendered it correctly -- this was the
+  -- actual cause of "rendered file not found" errors and files that
+  -- silently failed to get cleaned up. Only the file name is affected; your
+  -- clip's title text elsewhere is untouched.
+  local out = {}
+  for i = 1, #name do
+    local b = name:byte(i)
+    if b >= 32 and b <= 126 then
+      out[#out+1] = string.char(b)
+    end
+  end
+  name = table.concat(out)
   -- Strip filesystem-illegal characters AND apostrophes/quotes. Apostrophes
   -- are legal in Windows filenames but break the ffmpeg concat list format
   -- (which wraps paths in single quotes), so we strip them at the source
   -- going forward rather than relying only on escaping downstream.
   name = name:gsub('[\\/:%*%?"<>|\']', "_")
+  name = name:gsub("%s+", " ") -- collapse repeated spaces left behind by stripped characters
   name = name:gsub("^%s+", ""):gsub("%s+$", "")
   if #name == 0 then name = "Short" end
   return name:sub(1, 100)
@@ -147,6 +166,52 @@ end
 local function file_exists(path)
   local f = io.open(path, "rb")
   if f then f:close(); return true end
+  return false
+end
+
+-- Retries a few times with a short pause, since a freshly-written file can
+-- briefly be locked (e.g. antivirus/indexing scanning it right after the
+-- process that wrote it exits). The os.remove() call itself is wrapped in
+-- pcall: if it throws for any reason (rather than just returning false),
+-- this must NOT crash the caller -- an uncaught error here previously meant
+-- a stitch job's "done" status never got recorded, which caused the whole
+-- stitch (including re-running ffmpeg) to silently restart every second,
+-- forever, since the background checker kept seeing it as unfinished.
+local function remove_file_retry(path, tries, delay_ms)
+  tries = tries or 8
+  delay_ms = delay_ms or 150
+  for i = 1, tries do
+    local ok, removed = pcall(os.remove, path)
+    if ok and removed then return true end
+    sleep_ms(delay_ms)
+  end
+  return false
+end
+
+-- Waits for a file to appear, since Resolve reporting the render queue as
+-- "done" doesn't guarantee every job's file has finished being flushed and
+-- closed on disk that exact instant -- with more jobs rendered back to
+-- back, there's a higher chance the last one or two are still finalizing.
+local function wait_for_file(path, tries, delay_ms)
+  tries = tries or 10
+  delay_ms = delay_ms or 300
+  for i = 1, tries do
+    if file_exists(path) then return true end
+    sleep_ms(delay_ms)
+  end
+  return false
+end
+
+-- Retries a few times with a short pause, since a freshly-written file can
+-- briefly be locked by antivirus/indexing right after the process that
+-- created it exits.
+local function remove_file_retry(path, tries, delay_ms)
+  tries = tries or 5
+  delay_ms = delay_ms or 100
+  for i = 1, tries do
+    if os.remove(path) then return true end
+    sleep_ms(delay_ms)
+  end
   return false
 end
 
@@ -192,6 +257,19 @@ end
 do
   local loaded = read_json_file(BATCH_PATH)
   if loaded then batch_state = loaded end
+end
+
+-- One-time cleanup sweep on startup: if a previous session left any concat
+-- list .txt files behind (e.g. before this fix existed), remove them now.
+if batch_state.targetDir and batch_state.targetDir ~= "" and batch_state.jobs then
+  for _, job in ipairs(batch_state.jobs) do
+    if job.filename then
+      local strayPath = batch_state.targetDir .. "\\_bulkshorts_concat_" .. job.filename .. ".txt"
+      if file_exists(strayPath) then
+        remove_file_retry(strayPath, 5, 150)
+      end
+    end
+  end
 end
 
 -----------------------------------------------------------------------
@@ -246,13 +324,13 @@ local function do_stitch(jobId, targetDir, filename, ext, outroPath, deleteRaw)
           listPath, finalPath, logPath
         )
         os.execute(cmd)
-        os.remove(listPath)
+        remove_file_retry(listPath)
 
         if not file_exists(finalPath) then
           local tail = read_log_tail(logPath)
           result = { ok = false, error = "ffmpeg did not produce an output file." .. (tail ~= "" and (" ffmpeg said: " .. tail) or " Check the .log file next to your renders.") }
         else
-          if deleteRaw then os.remove(rawPath) end
+        if deleteRaw then remove_file_retry(rawPath, 5, 150) end
           result = { ok = true, finalPath = finalPath }
         end
       end
@@ -261,6 +339,160 @@ local function do_stitch(jobId, targetDir, filename, ext, outroPath, deleteRaw)
 
   batch_state.outroStatus[jobId] = result
   persist_batch()
+  return result
+end
+
+-----------------------------------------------------------------------
+-- Native file/folder browse dialogs.
+-- We don't have fu.UIManager available in this scripting context, and a
+-- browser window can only ever return a bare filename (never a real path)
+-- from <input type=file> for security reasons. So instead we shell out to
+-- PowerShell's built-in .NET dialogs (System.Windows.Forms), which are part
+-- of every Windows install and don't need any extra downloads.
+--
+-- We launch PowerShell directly via CreateProcessA with CREATE_NO_WINDOW
+-- (raw Win32, not io.popen) so no cmd.exe wrapper window flashes on screen --
+-- io.popen always spawns a visible cmd.exe console on Windows since it has
+-- no "hidden window" option of its own. The dialog script writes its result
+-- to a small temp file, which we read back after the process exits, since
+-- CreateProcessA doesn't give us the shell's ">" redirection syntax.
+-----------------------------------------------------------------------
+ffi.cdef[[
+typedef struct _STARTUPINFOA {
+  unsigned long cb;
+  char* lpReserved;
+  char* lpDesktop;
+  char* lpTitle;
+  unsigned long dwX;
+  unsigned long dwY;
+  unsigned long dwXSize;
+  unsigned long dwYSize;
+  unsigned long dwXCountChars;
+  unsigned long dwYCountChars;
+  unsigned long dwFillAttribute;
+  unsigned long dwFlags;
+  unsigned short wShowWindow;
+  unsigned short cbReserved2;
+  unsigned char* lpReserved2;
+  void* hStdInput;
+  void* hStdOutput;
+  void* hStdError;
+} STARTUPINFOA;
+
+typedef struct _PROCESS_INFORMATION {
+  void* hProcess;
+  void* hThread;
+  unsigned long dwProcessId;
+  unsigned long dwThreadId;
+} PROCESS_INFORMATION;
+
+int CreateProcessA(
+  const char* lpApplicationName,
+  char* lpCommandLine,
+  void* lpProcessAttributes,
+  void* lpThreadAttributes,
+  int bInheritHandles,
+  unsigned long dwCreationFlags,
+  void* lpEnvironment,
+  const char* lpCurrentDirectory,
+  STARTUPINFOA* lpStartupInfo,
+  PROCESS_INFORMATION* lpProcessInformation
+);
+unsigned long WaitForSingleObject(void* hHandle, unsigned long dwMilliseconds);
+int CloseHandle(void* hObject);
+]]
+
+local CREATE_NO_WINDOW = 0x08000000
+local INFINITE = 0xFFFFFFFF
+
+-- Directory listing, used by the standalone "Add Outros Manually" recovery
+-- tool. Implemented via raw FindFirstFileA/FindNextFileA (same family of
+-- API as the CreateProcessA call above) rather than shelling out to `dir`,
+-- so it's fast, synchronous, and never flashes a console window.
+ffi.cdef[[
+typedef struct _FILETIME { unsigned long dwLowDateTime; unsigned long dwHighDateTime; } FILETIME;
+typedef struct _WIN32_FIND_DATAA {
+  unsigned long dwFileAttributes;
+  FILETIME ftCreationTime;
+  FILETIME ftLastAccessTime;
+  FILETIME ftLastWriteTime;
+  unsigned long nFileSizeHigh;
+  unsigned long nFileSizeLow;
+  unsigned long dwReserved0;
+  unsigned long dwReserved1;
+  char cFileName[260];
+  char cAlternateFileName[14];
+} WIN32_FIND_DATAA;
+void* FindFirstFileA(const char* lpFileName, WIN32_FIND_DATAA* lpFindFileData);
+int FindNextFileA(void* hFindFile, WIN32_FIND_DATAA* lpFindFileData);
+int FindClose(void* hFindFile);
+]]
+
+local bit = require("bit")
+local FILE_ATTRIBUTE_DIRECTORY = 0x10
+
+local function list_files_with_ext(folder, ext)
+  local results = {}
+  local pattern = folder .. "\\*." .. ext
+  local findData = ffi.new("WIN32_FIND_DATAA")
+  local handle = ffi.C.FindFirstFileA(pattern, findData)
+  if tonumber(ffi.cast("intptr_t", handle)) == -1 then
+    return results
+  end
+  repeat
+    local name = ffi.string(findData.cFileName)
+    local isDir = bit.band(findData.dwFileAttributes, FILE_ATTRIBUTE_DIRECTORY) ~= 0
+    if name ~= "." and name ~= ".." and not isDir then
+      results[#results+1] = name
+    end
+  until ffi.C.FindNextFileA(handle, findData) == 0
+  ffi.C.FindClose(handle)
+  return results
+end
+
+-- Runs a command line completely windowless and waits for it to exit.
+-- Returns true if the process was successfully launched (regardless of
+-- what it did once running), or false if CreateProcessA itself failed.
+local function run_hidden(cmdline)
+  local si = ffi.new("STARTUPINFOA")
+  si.cb = ffi.sizeof("STARTUPINFOA")
+  local pi = ffi.new("PROCESS_INFORMATION")
+  local buf = ffi.new("char[?]", #cmdline + 1)
+  ffi.copy(buf, cmdline)
+  local ok = ffi.C.CreateProcessA(nil, buf, nil, nil, 0, CREATE_NO_WINDOW, nil, nil, si, pi)
+  if ok == 0 then return false end
+  ffi.C.WaitForSingleObject(pi.hProcess, INFINITE)
+  ffi.C.CloseHandle(pi.hProcess)
+  ffi.C.CloseHandle(pi.hThread)
+  return true
+end
+
+-- Runs a PowerShell script windowless. The script must, on success, write
+-- its result to the literal text "TEMPPATH" (which we substitute with a
+-- real temp file path) using [System.IO.File]::WriteAllText('TEMPPATH', $result).
+-- Returns the trimmed file contents, or nil if the user cancelled / nothing
+-- was written.
+local function run_powershell_dialog_hidden(psBodyWithPlaceholder)
+  local tempPath = (os.getenv("TEMP") or "C:\\Windows\\Temp")
+    .. "\\bulkshorts_dlg_" .. os.time() .. "_" .. tostring(os.clock()):gsub("[%.%-]", "") .. ".txt"
+
+  local script = psBodyWithPlaceholder:gsub("TEMPPATH", tempPath)
+  local cmdline = 'powershell.exe -NoProfile -WindowStyle Hidden -Command "' .. script:gsub('"', '\\"') .. '"'
+
+  local launched = run_hidden(cmdline)
+  if not launched then return nil, "Could not launch the file browser." end
+
+  local result = nil
+  local f = io.open(tempPath, "r")
+  if f then
+    result = f:read("*a")
+    f:close()
+    os.remove(tempPath)
+  end
+  if result then
+    result = result:gsub("^%s+", ""):gsub("%s+$", "")
+    if result == "" then result = nil end
+  end
   return result
 end
 
@@ -307,6 +539,46 @@ handlers["SaveSettings"] = function(data)
   for k, v in pairs(data.settings or {}) do existing[k] = v end
   if not write_settings(existing) then return { error = "Could not write settings.json" } end
   return { ok = true }
+end
+
+-- Native browse dialogs
+handlers["BrowseFile"] = function(data)
+  local filter = data.filter or "All Files|*.*"
+  local ps = string.format(
+    "Add-Type -AssemblyName System.Windows.Forms; " ..
+    "$f = New-Object System.Windows.Forms.OpenFileDialog; " ..
+    "$f.Filter = '%s'; " ..
+    "if ($f.ShowDialog() -eq 'OK') { $result = $f.FileName } else { $result = '' }; " ..
+    "if ($result -ne '') { [System.IO.File]::WriteAllText('TEMPPATH', $result) }",
+    filter
+  )
+  local output, err = run_powershell_dialog_hidden(ps)
+  if err then return { error = err } end
+  if not output then return { ok = true, path = nil, cancelled = true } end
+  return { ok = true, path = output }
+end
+
+handlers["BrowseFolder"] = function(data)
+  -- Uses the file-open dialog with a fake filename rather than the older
+  -- FolderBrowserDialog, since that gives the same modern Explorer-style
+  -- window as file selection instead of the old tree-view "Browse For
+  -- Folder" dialog. Taking the parent directory of the fake filename gives
+  -- us the folder the person navigated into.
+  local ps =
+    "Add-Type -AssemblyName System.Windows.Forms; " ..
+    "$f = New-Object System.Windows.Forms.OpenFileDialog; " ..
+    "$f.ValidateNames = $false; " ..
+    "$f.CheckFileExists = $false; " ..
+    "$f.CheckPathExists = $true; " ..
+    "$f.FileName = 'Folder Selection.'; " ..
+    "$f.Title = 'Select Output Folder'; " ..
+    "if ($f.ShowDialog() -eq 'OK') { $result = Split-Path $f.FileName -Parent } else { $result = '' }; " ..
+    "if ($result -ne '') { [System.IO.File]::WriteAllText('TEMPPATH', $result) }"
+
+  local output, err = run_powershell_dialog_hidden(ps)
+  if err then return { error = err } end
+  if not output then return { ok = true, path = nil, cancelled = true } end
+  return { ok = true, path = output }
 end
 
 -- Active batch (restores UI state after window close/reopen)
@@ -503,7 +775,68 @@ handlers["ClearQueue"] = function(data)
   return { ok = true }
 end
 
--- ---- Outro stitching ----
+-- ---- Manual outro recovery tool: works on any folder, independent of any tracked batch ----
+
+handlers["ScanFolderForClips"] = function(data)
+  local folder = data.targetDir
+  local ext = data.extension or "mp4"
+  if not folder or folder == "" then return { error = "No folder given" } end
+
+  local ok, files = pcall(list_files_with_ext, folder, ext)
+  if not ok then return { error = "Could not scan folder: " .. tostring(files) } end
+
+  local clips = {}
+  local extLen = #ext + 1 -- ".ext"
+  for _, fname in ipairs(files) do
+    if fname:sub(-extLen) == "." .. ext and not fname:match("^_bulkshorts_concat_") then
+      local base = fname:sub(1, -(extLen + 1))
+      if not base:match("_final$") then
+        local finalExists = file_exists(folder .. "\\" .. base .. "_final." .. ext)
+        clips[#clips+1] = { filename = base, alreadyDone = finalExists }
+      end
+    end
+  end
+  return { ok = true, clips = clips }
+end
+
+handlers["StitchFolderClip"] = function(data)
+  local targetDir = data.targetDir
+  local filename = data.filename
+  local ext = data.extension or "mp4"
+  local outroPath = data.outroPath
+  local deleteRaw = data.deleteRaw
+
+  if not targetDir or not filename then return { error = "Missing targetDir/filename" } end
+  if not outroPath or outroPath == "" then return { error = "No outro file path given" } end
+  if not file_exists(outroPath) then return { error = "Outro file not found: " .. outroPath } end
+
+  local rawPath = targetDir .. "\\" .. filename .. "." .. ext
+  local finalPath = targetDir .. "\\" .. filename .. "_final." .. ext
+  local listPath = targetDir .. "\\_bulkshorts_concat_" .. filename .. ".txt"
+  local logPath = listPath .. ".log"
+
+  if not file_exists(rawPath) then return { error = "Clip not found: " .. rawPath } end
+
+  local listFile = io.open(listPath, "w")
+  if not listFile then return { error = "Could not write concat list file" } end
+  listFile:write("file '" .. ffmpeg_escape_concat_path(rawPath:gsub("\\", "/")) .. "'\n")
+  listFile:write("file '" .. ffmpeg_escape_concat_path(outroPath:gsub("\\", "/")) .. "'\n")
+  listFile:close()
+
+  local cmd = string.format('ffmpeg -y -f concat -safe 0 -i "%s" -c copy "%s" > "%s" 2>&1', listPath, finalPath, logPath)
+  os.execute(cmd)
+  remove_file_retry(listPath)
+
+  if not file_exists(finalPath) then
+    local tail = read_log_tail(logPath)
+    return { error = "ffmpeg did not produce an output file." .. (tail ~= "" and (" ffmpeg said: " .. tail) or "") }
+  end
+
+  if deleteRaw then remove_file_retry(rawPath, 5, 150) end
+  return { ok = true, finalPath = finalPath }
+end
+
+-- ---- Batch-tracked outro stitching ----
 
 handlers["CheckFfmpeg"] = function(data)
   local handle = io.popen("ffmpeg -version 2>&1")
@@ -560,6 +893,18 @@ local function check_batch_completion()
   batch_state.renderStarted = false
   batch_state.stitchDone = true
   persist_batch()
+
+  -- Second-chance cleanup sweep: by now every ffmpeg process from this batch
+  -- has long since exited, so any lingering lock from the first attempt
+  -- should have cleared.
+  for _, job in ipairs(batch_state.jobs) do
+    if job.filename then
+      local strayPath = batch_state.targetDir .. "\\_bulkshorts_concat_" .. job.filename .. ".txt"
+      if file_exists(strayPath) then
+        remove_file_retry(strayPath, 5, 150)
+      end
+    end
+  end
 end
 
 -----------------------------------------------------------------------
