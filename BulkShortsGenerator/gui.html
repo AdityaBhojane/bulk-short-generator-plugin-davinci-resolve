@@ -57,6 +57,10 @@
   button:disabled { opacity: 0.6; cursor: not-allowed; }
   button:hover:not(:disabled) { filter: brightness(1.1); }
 
+  .path-row { display: flex; gap: 6px; align-items: center; }
+  .path-row input[type=text] { flex: 1; }
+  .path-row button { margin: 0; flex-shrink: 0; }
+
   .spinner {
     display: inline-block; width: 12px; height: 12px;
     border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff;
@@ -120,13 +124,13 @@
     <button id="stopServerBtn" class="danger" onclick="runWithLoading(this, 'Stopping...', stopServer)">Stop Server</button>
   </span>
 </h2>
-<p class="muted">Connects to the BulkShorts Lua server running inside DaVinci Resolve. Closing this window does NOT stop the server, rendering, or outro stitching. Opening it just does a quick connection check — click "🔄 Restore Data" to pull back your saved settings and last batch on your own schedule.</p>
+<p class="muted">Connects to the BulkShorts Lua server running inside DaVinci Resolve. Closing this window does NOT stop the server, rendering, or outro stitching. Your saved folder/outro paths load automatically — click "🔄 Restore Data" only to pull back render presets or an in-progress batch.</p>
 
 <div id="errorBanner"><span id="errorBannerText"></span><button onclick="hideError()">✕</button></div>
 
 <section>
   <div class="step">1. Connection</div>
-  <button class="primary" id="connectBtn" onclick="runWithLoading(this, 'Connecting...', quickCheck)">Test Connection</button>
+  <button class="primary" id="connectBtn" onclick="runWithLoading(this, 'Connecting...', initialLoad)">Test Connection</button>
   <button class="icon" id="restoreBtn" onclick="runWithLoading(this, 'Restoring...', restoreData)">🔄 Restore Data</button>
   <span id="connStatus" class="muted"></span>
 </section>
@@ -143,11 +147,14 @@
   <button class="icon" id="refreshPresetsBtn" onclick="runWithLoading(this, 'Loading...', loadPresets)">🔄 Refresh preset list</button>
 
   <div class="subhead">Output folder</div>
-  <input type="text" id="targetDir" placeholder="Leave blank for default: %USERPROFILE%\Videos\BulkShorts" onchange="saveSettings()">
+  <div class="path-row">
+    <input type="text" id="targetDir" placeholder="Leave blank for default: %USERPROFILE%\Videos\BulkShorts" onchange="saveSettings()">
+    <button class="icon" id="browseFolderBtn" onclick="runWithLoading(this, 'Waiting for dialog...', browseOutputFolder)">📁 Browse</button>
+  </div>
   <div id="lockNote" class="locked-note" style="display:none;">Locked for this batch. Click "Start New Batch" below to change it.</div>
 
   <div class="subhead">Outro</div>
-  <p class="muted">Requires ffmpeg installed and on your PATH. Titles with an apostrophe (') or straight quote (") are now handled correctly — clip titles are sanitized and the concat list is properly escaped. Stitching runs automatically as soon as rendering finishes — even if this window is closed. You can change these settings any time, even after jobs are created.</p>
+  <p class="muted">Requires ffmpeg installed and on your PATH. Stitching runs automatically as soon as rendering finishes — even if this window is closed. You can change these settings any time, even after jobs are created.</p>
   <div class="switch-row">
     <label class="switch">
       <input type="checkbox" id="addOutro" checked onchange="saveSettings()">
@@ -157,7 +164,10 @@
   </div>
   <div style="margin-top:10px;">
     <label class="muted">Outro file (full path):</label>
-    <input type="text" id="outroPath" placeholder="C:\Outro\outro.mp4" onchange="saveSettings()">
+    <div class="path-row">
+      <input type="text" id="outroPath" placeholder="C:\Outro\outro.mp4" onchange="saveSettings()">
+      <button class="icon" id="browseOutroBtn" onclick="runWithLoading(this, 'Waiting for dialog...', browseOutroFile)">📁 Browse</button>
+    </div>
   </div>
   <div class="row" style="margin-top:6px;">
     <label class="muted">Render output extension:</label>
@@ -193,6 +203,25 @@ Almost Caught | 00:41:02 | 00:42:37"></textarea>
   <button class="primary" id="startRenderBtn" onclick="runWithLoading(this, 'Starting render...', startRender)">Render All Shorts</button>
   <button id="stopRenderBtn" onclick="runWithLoading(this, 'Stopping...', stopRender)">Stop</button>
   <table id="renderTable"><thead><tr><th>Job</th><th>Status</th><th>Progress</th><th>Preset</th><th>Outro</th></tr></thead><tbody></tbody></table>
+</section>
+
+<section>
+  <div class="step">6. Add Outros Manually (recovery tool)</div>
+  <p class="muted">Independent of anything above. Point this at any folder — it scans for already-rendered clips missing an outro and lets you attach them in one pass. Useful if outro stitching failed or was skipped for some clips earlier.</p>
+
+  <div class="subhead">Folder to scan</div>
+  <div class="path-row">
+    <input type="text" id="scanFolder" placeholder="Folder containing rendered clips">
+    <button class="icon" onclick="runWithLoading(this, 'Waiting for dialog...', browseScanFolder)">📁 Browse</button>
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <label class="muted">File extension:</label>
+    <input type="text" id="scanExt" value="mp4" style="max-width:80px;">
+  </div>
+  <button class="icon" onclick="runWithLoading(this, 'Scanning...', scanFolder)">🔍 Scan Folder</button>
+
+  <table id="scanTable" style="display:none;"><thead><tr><th><input type="checkbox" id="scanSelectAll" onchange="toggleSelectAll()"></th><th>Clip</th><th>Status</th></tr></thead><tbody></tbody></table>
+  <button class="primary" id="attachOutrosBtn" style="display:none;" onclick="runWithLoading(this, 'Attaching outros...', attachOutrosToSelected)">Attach Outros to Selected</button>
 </section>
 
 <div id="log"></div>
@@ -287,7 +316,6 @@ async function loadSettings() {
     if (currentSettings.targetDir) document.getElementById("targetDir").value = currentSettings.targetDir;
     applyTheme(!!currentSettings.lightMode);
     if (currentSettings.renderPresetName) window.__savedPreset = currentSettings.renderPresetName;
-    log("Loaded saved settings.");
   }
 }
 
@@ -324,6 +352,29 @@ async function loadPresets() {
   }
 }
 
+// ---------- Native browse dialogs ----------
+async function browseOutputFolder() {
+  const field = document.getElementById("targetDir");
+  if (field.disabled) { showError("Output folder is locked for this batch. Click 'Start New Batch' to change it."); return; }
+  const resp = await callResolve({ func: "BrowseFolder" });
+  if (resp.error) { showError(resp.error); return; }
+  if (resp.path) {
+    field.value = resp.path;
+    await saveSettings();
+    log("Output folder selected: " + resp.path);
+  }
+}
+
+async function browseOutroFile() {
+  const resp = await callResolve({ func: "BrowseFile", filter: "Video Files|*.mp4;*.mov;*.mkv;*.avi|All Files|*.*" });
+  if (resp.error) { showError(resp.error); return; }
+  if (resp.path) {
+    document.getElementById("outroPath").value = resp.path;
+    await saveSettings();
+    log("Outro file selected: " + resp.path);
+  }
+}
+
 function setPresetNote(presetName) {
   const el = document.getElementById("presetUsedNote");
   el.textContent = presetName
@@ -344,6 +395,7 @@ async function restoreActiveBatch() {
   const targetDirField = document.getElementById("targetDir");
   targetDirField.value = batch.targetDir;
   targetDirField.disabled = true;
+  document.getElementById("browseFolderBtn").disabled = true;
   document.getElementById("renderPreset").disabled = true;
   document.getElementById("lockNote").style.display = "block";
   document.getElementById("queueBtn").style.display = "none";
@@ -440,7 +492,7 @@ async function retryStitch(jobId) {
   }
 }
 
-// ---------- Connection: fast check only (Ping + timeline info) ----------
+// ---------- Connection: fast check (Ping + timeline info) ----------
 async function quickCheck() {
   const statusEl = document.getElementById("connStatus");
   statusEl.textContent = "";
@@ -456,7 +508,16 @@ async function quickCheck() {
   log(`Connected to timeline "${info.name}" (${info.fps}fps, ${info.durationSeconds.toFixed(1)}s)`);
 }
 
-// ---------- Restore Data: the heavier chain, only runs when you click it ----------
+// Runs automatically on window open: fast connection check PLUS settings
+// (folder/outro/theme etc.) since that's just a local file read on the Lua
+// side, not a Resolve API call. Presets and active-batch restore stay behind
+// the manual button since those hit Resolve's API and can be slow.
+async function initialLoad() {
+  await quickCheck();
+  await loadSettings();
+  log("Settings loaded. Click 🔄 Restore Data if you want to pull back render presets or an in-progress batch.");
+}
+
 async function restoreData() {
   await quickCheck();
   await loadSettings();
@@ -547,6 +608,7 @@ async function queueJobs() {
 
   targetDirField.value = resp.targetDir;
   targetDirField.disabled = true;
+  document.getElementById("browseFolderBtn").disabled = true;
   presetSelect.disabled = true;
   document.getElementById("lockNote").style.display = "block";
   document.getElementById("queueBtn").style.display = "none";
@@ -563,6 +625,7 @@ async function startNewBatch() {
   queuedJobs = [];
   lockedTargetDir = "";
   document.getElementById("targetDir").disabled = false;
+  document.getElementById("browseFolderBtn").disabled = false;
   document.getElementById("renderPreset").disabled = false;
   document.getElementById("lockNote").style.display = "none";
   document.getElementById("queueBtn").style.display = "inline-block";
@@ -656,9 +719,100 @@ async function checkFfmpeg() {
   else { el.textContent = resp.error; el.className = "err"; showError(resp.error); }
 }
 
-// ---------- On open: fast connection check only. Restoring data is manual. ----------
+// ---------- Manual Outro Recovery Tool ----------
+let scannedClips = [];
+
+async function browseScanFolder() {
+  const resp = await callResolve({ func: "BrowseFolder" });
+  if (resp.error) { showError(resp.error); return; }
+  if (resp.path) {
+    document.getElementById("scanFolder").value = resp.path;
+    log("Scan folder selected: " + resp.path);
+  }
+}
+
+async function scanFolder() {
+  const folder = document.getElementById("scanFolder").value.trim();
+  const ext = document.getElementById("scanExt").value.trim() || "mp4";
+  if (!folder) { showError("Enter or browse to a folder first."); return; }
+
+  const resp = await callResolve({ func: "ScanFolderForClips", targetDir: folder, extension: ext });
+  if (resp.error) { showError(resp.error); return; }
+
+  scannedClips = resp.clips || [];
+  const tbody = document.querySelector("#scanTable tbody");
+  tbody.innerHTML = "";
+
+  if (scannedClips.length === 0) {
+    log(`No .${ext} clips found in that folder.`);
+    document.getElementById("scanTable").style.display = "none";
+    document.getElementById("attachOutrosBtn").style.display = "none";
+    return;
+  }
+
+  for (const clip of scannedClips) {
+    const row = document.createElement("tr");
+    row.id = "scan_" + btoa(unescape(encodeURIComponent(clip.filename))).replace(/[^a-zA-Z0-9]/g, "");
+    row.dataset.filename = clip.filename;
+    const checked = clip.alreadyDone ? "" : "checked";
+    const statusHtml = clip.alreadyDone ? '<span class="ok">Already has outro</span>' : '<span class="muted">Not done</span>';
+    row.innerHTML = `<td><input type="checkbox" class="scan-check" ${checked}></td><td>${clip.filename}</td><td class="scan-status">${statusHtml}</td>`;
+    tbody.appendChild(row);
+  }
+
+  document.getElementById("scanTable").style.display = "table";
+  document.getElementById("attachOutrosBtn").style.display = "inline-flex";
+  log(`Found ${scannedClips.length} clip(s), ${scannedClips.filter(c => !c.alreadyDone).length} without an outro yet.`);
+}
+
+function toggleSelectAll() {
+  const all = document.getElementById("scanSelectAll").checked;
+  document.querySelectorAll(".scan-check").forEach(cb => cb.checked = all);
+}
+
+async function attachOutrosToSelected() {
+  const folder = document.getElementById("scanFolder").value.trim();
+  const ext = document.getElementById("scanExt").value.trim() || "mp4";
+  const outroPath = document.getElementById("outroPath").value.trim();
+  const deleteRaw = document.getElementById("deleteRaw").checked;
+
+  if (!outroPath) { showError("Set an outro file path in the Settings section above first."); return; }
+
+  const rows = Array.from(document.querySelectorAll("#scanTable tbody tr")).filter(r => r.querySelector(".scan-check").checked);
+  if (rows.length === 0) { showError("No clips selected."); return; }
+
+  let successCount = 0, failCount = 0;
+  for (const row of rows) {
+    const filename = row.dataset.filename;
+    const statusCell = row.querySelector(".scan-status");
+    statusCell.innerHTML = `<span class="spin-inline"></span>Stitching...`;
+
+    const resp = await callResolve({
+      func: "StitchFolderClip",
+      targetDir: folder,
+      filename: filename,
+      extension: ext,
+      outroPath: outroPath,
+      deleteRaw: deleteRaw,
+    });
+
+    if (resp.error) {
+      failCount++;
+      statusCell.innerHTML = `<span class="err" title="${resp.error.replace(/"/g, '&quot;')}">Failed</span>`;
+      log(`Failed: ${filename} - ${resp.error}`);
+    } else {
+      successCount++;
+      statusCell.innerHTML = `<span class="ok">Done</span>`;
+      log(`Outro attached: ${resp.finalPath}`);
+    }
+  }
+  log(`Manual outro pass complete: ${successCount} succeeded, ${failCount} failed.`);
+  if (failCount > 0) showError(`${failCount} clip(s) failed to get an outro. Check the log for details.`);
+}
+
+// ---------- On open: fast connection check + settings load ----------
 window.addEventListener("load", () => {
-  runWithLoading(document.getElementById("connectBtn"), "Connecting...", quickCheck);
+  runWithLoading(document.getElementById("connectBtn"), "Connecting...", initialLoad);
 });
 </script>
 </body>
